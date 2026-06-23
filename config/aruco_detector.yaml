@@ -1,0 +1,8 @@
+aruco_detector:
+  ros__parameters:
+    image_topic: /world/aruco/model/x500_mono_cam_down_0/link/camera_link/sensor/camera/image
+    camera_info_topic: /world/aruco/model/x500_mono_cam_down_0/link/camera_link/sensor/camera/camera_info
+    marker_length: 0.5
+    dictionary: DICT_4X4_50
+    target_id: 0
+    sync_queue_size: 10
