@@ -68,6 +68,117 @@ src/aruco_detector/config/aruco_detector.yaml
 ros2 launch aruco_detector aruco_detector.launch.py config_file:=/path/to/aruco_detector.yaml
 ```
 
+## USB 摄像头实机测试
+
+如果只想用本机 USB 摄像头快速验证检测链路，可以不修改当前默认配置，通过运行时参数覆盖输入话题。
+
+先在另一台电脑上全屏显示 ArUco marker：
+
+- 字典：`DICT_4X4_50`
+- ID：`0`
+- `marker_length`：屏幕上黑色 marker 外边框的实际边长，单位为米
+
+例如黑色 marker 外边框量到 `12 cm`，后续命令中使用 `marker_length:=0.12`。注意屏幕反光、过曝和摩尔纹可能影响识别。
+
+启动 USB 摄像头图像发布。这里使用 ROS 2 自带的 `image_tools cam2image`，假设摄像头设备编号为 `0`：
+
+```bash
+source /opt/ros/humble/setup.bash
+
+ROS_LOG_DIR=/tmp/ros_logs ros2 run image_tools cam2image --ros-args \
+  -r image:=/usb_cam/image_raw \
+  -p device_id:=0 \
+  -p width:=640 \
+  -p height:=480 \
+  -p reliability:=best_effort \
+  -p show_camera:=false
+```
+
+`cam2image` 只发布图像，不发布相机内参。为了快速验证检测和 `/aruco/pose` 链路，可以临时发布一个近似 `CameraInfo`：
+
+```bash
+source /opt/ros/humble/setup.bash
+
+ROS_LOG_DIR=/tmp/ros_logs python3 - <<'PY'
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import CameraInfo
+
+
+class CameraInfoPublisher(Node):
+    def __init__(self):
+        super().__init__("usb_cam_temporary_camera_info")
+        qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
+        self.pub = self.create_publisher(CameraInfo, "/usb_cam/camera_info", qos)
+        self.timer = self.create_timer(1.0 / 30.0, self.publish_info)
+
+    def publish_info(self):
+        msg = CameraInfo()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "camera_frame"
+        msg.height = 480
+        msg.width = 640
+        msg.distortion_model = "plumb_bob"
+        msg.d = [0.0, 0.0, 0.0, 0.0, 0.0]
+        msg.k = [600.0, 0.0, 320.0,
+                 0.0, 600.0, 240.0,
+                 0.0, 0.0, 1.0]
+        msg.r = [1.0, 0.0, 0.0,
+                 0.0, 1.0, 0.0,
+                 0.0, 0.0, 1.0]
+        msg.p = [600.0, 0.0, 320.0, 0.0,
+                 0.0, 600.0, 240.0, 0.0,
+                 0.0, 0.0, 1.0, 0.0]
+        self.pub.publish(msg)
+
+
+rclpy.init()
+node = CameraInfoPublisher()
+rclpy.spin(node)
+PY
+```
+
+再启动检测节点，覆盖输入图像和内参话题：
+
+```bash
+source /opt/ros/humble/setup.bash
+source /home/j/ws_aruco_landing/install/setup.bash
+
+ROS_LOG_DIR=/tmp/ros_logs ros2 run aruco_detector aruco_detector_node --ros-args \
+  -p image_topic:=/usb_cam/image_raw \
+  -p camera_info_topic:=/usb_cam/camera_info \
+  -p dictionary:=DICT_4X4_50 \
+  -p target_id:=0 \
+  -p marker_length:=0.12
+```
+
+其中 `marker_length:=0.12` 需要按实际显示尺寸修改。
+
+验证图像和检测结果：
+
+```bash
+source /opt/ros/humble/setup.bash
+
+ROS_LOG_DIR=/tmp/ros_logs rqt_image_view
+ROS_LOG_DIR=/tmp/ros_logs ros2 topic echo /aruco/visible
+ROS_LOG_DIR=/tmp/ros_logs ros2 topic echo /aruco/pose
+```
+
+在 `rqt_image_view` 中选择 `/aruco/debug_image`。识别成功时，调试图像会显示 marker 边框和坐标轴，`/aruco/visible` 会输出 `true`。
+
+当前发布的位姿使用相机光学坐标系：
+
+- `x`：图像向右为正
+- `y`：图像向下为正
+- `z`：摄像头前方为正
+
+因此 marker 在图像左上角时，`x` 和 `y` 通常都是负值。临时 `CameraInfo` 只适合验证链路，精确位姿需要对 USB 摄像头做正式标定。
+
 ## 默认输入
 
 默认订阅的话题来自 `config/aruco_detector.yaml`：
